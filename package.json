@@ -1,0 +1,32 @@
+{
+  "name": "sp-backend",
+  "version": "1.0.0",
+  "description": "This project was bootstrapped with Fastify-CLI.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "ts-node-dev --respawn --transpile-only src/index.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alex-wit-2025/sp-backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Alex-wit-2025/sp-backend/issues"
+  },
+  "homepage": "https://github.com/Alex-wit-2025/sp-backend#readme",
+  "dependencies": {
+    "@fastify/websocket": "^11.1.0",
+    "fastify": "^5.3.3",
+    "zod": "^3.25.51"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.29",
+    "ts-node-dev": "^2.0.0",
+    "typescript": "^5.8.3"
+  }
+}
