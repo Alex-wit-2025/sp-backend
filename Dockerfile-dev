@@ -1,0 +1,21 @@
+# Base image
+FROM node:18-alpine
+
+# Set working directory
+WORKDIR /app
+
+# Copy package files and install dependencies
+COPY package*.json ./
+RUN npm install
+
+# Copy the rest of the app
+COPY . .
+
+# Expose app port (default 3000 for Fastify)
+EXPOSE 3000
+
+# Install TypeScript globally (optional)
+RUN npm install -g ts-node-dev
+
+# Start the app in dev mode
+CMD ["ts-node-dev", "--respawn", "--transpile-only", "src/index.ts"]
