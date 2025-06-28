@@ -19,6 +19,9 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 
+# Firebase service account key file
+serviceAccountKey.json
+
 # IDEs
 .vscode/
 .idea/
