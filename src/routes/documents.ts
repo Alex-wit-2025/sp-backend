@@ -10,6 +10,7 @@ interface GetDocRequest extends FastifyRequest {
   headers: { authorization?: string };
 }
 
+
 export async function docRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { id: string; uid: string }; Reply: DocumentData | { error: string } }>(
     "/api/documents/:id/:uid",
@@ -18,12 +19,12 @@ export async function docRoutes(fastify: FastifyInstance) {
       const { id, uid } = request.params;
       const authHeader = request.headers.authorization;
       //console.log("Authorization header:", authHeader);
-
+      
       if (!authHeader || !authHeader.startsWith("Bearer ")) {
         console.error("Missing or invalid Authorization header");
         return reply.status(401).send({ error: "Missing or invalid Authorization header" });
       }
-
+      
       const idToken = authHeader.split(" ")[1];
       try {
         const decoded = await admin.auth().verifyIdToken(idToken);
@@ -63,9 +64,63 @@ export async function docRoutes(fastify: FastifyInstance) {
         console.log("Error verifying token or fetching document:", err);
         //get stack trace
         console.error("Stack trace:", err instanceof Error ? err.stack : "No stack trace available");
-        
+
         return reply.status(401).send({ error: "Invalid or expired token" });
       }
     }
   );
+  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { content?: string } }>(
+  "/api/documents/update/:id/:uid",
+  async (request, reply) => {
+    console.log("Received update request for document:", request.params.id, "by user:", request.params.uid);
+    console.log("Request body:", request.body);
+    console.log("Request headers:", request.headers);
+    const { id, uid } = request.params;
+    let content: string | undefined = undefined;
+    try {
+      const parsed = JSON.parse(request.body as string);
+      content = parsed.content;
+    } catch (e) {
+      console.error("Failed to parse request.body as JSON:", e);
+      return reply.status(400).send({ error: "Invalid JSON in request body" });
+    }
+    console.log("Content to update:", content);
+    const authHeader = request.headers.authorization;
+
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return reply.status(401).send({ error: "Missing or invalid Authorization header" });
+    }
+
+    const idToken = authHeader.split(" ")[1];
+    try {
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      if (decoded.uid !== uid) {
+        return reply.status(403).send({ error: "UID mismatch" });
+      }
+
+      const docRef = db.collection(COLLECTION_NAME).doc(id);
+      const docSnap = await docRef.get();
+
+      if (!docSnap.exists) {
+        return reply.status(404).send({ error: "Document not found" });
+      }
+
+      const data = docSnap.data() as DocumentData;
+      if (!data.collaborators.includes(uid)) {
+        return reply.status(403).send({ error: "Unauthorized access" });
+      }
+
+      // Only update if content is provided
+      if (typeof content === "string") {
+        await docRef.update({ content });
+        return true;
+      } else {
+        return reply.status(400).send({ error: "No content provided" });
+      }
+    } catch (err) {
+      console.error("Error updating document:", err);
+      return reply.status(500).send({ error: "Internal server error" });
+    }
+  }
+);
 }
