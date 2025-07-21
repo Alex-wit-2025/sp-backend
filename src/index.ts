@@ -3,6 +3,7 @@ import websocket from "@fastify/websocket";
 import { helloRoutes } from "./routes/hello";
 import { socketRoutes } from "./ws/socket";
 import { docRoutes } from "./routes/documents";
+import { userRoutes } from "./routes/user";
 
 const fastify = Fastify();
 
@@ -11,6 +12,8 @@ async function main() {
   await fastify.register(helloRoutes);
   await fastify.register(socketRoutes);
   await fastify.register(docRoutes);
+  await fastify.register(userRoutes);
+  
 
   try {
     await fastify.listen({ port: 3000 });
