@@ -19,6 +19,7 @@ interface ListCollaborators {
 
 
 export async function docRoutes(fastify: FastifyInstance) {
+  console.log("Registering document routes...");
   fastify.get<{ Params: { id: string; uid: string }; Reply: DocumentData | { error: string } }>(
     "/api/documents/:id/:uid",
     async (request: GetDocRequest, reply): Promise<DocumentData | { error: string }> => {
@@ -103,8 +104,29 @@ export async function docRoutes(fastify: FastifyInstance) {
           console.log("Collaborator already exists:", collaborator);
           return reply.status(400).send({ error: "Collaborator already exists" });
         }
-        const userDocRef = db.collection('users').doc(collaborator).collection('docs').doc(id);
-        await userDocRef.set({ id, title: data.title, content: data.content, creator: uid, collaborators: data.collaborators }, { merge: true });
+
+        // Ensure user document exists for the collaborator and update docs array
+        const userDocRef = db.collection('users').doc(collaborator);
+        const userDocSnap = await userDocRef.get();
+        if (!userDocSnap.exists) {
+          await userDocRef.set({ docs: [id] });
+          console.log("Created new user document for collaborator:", collaborator);
+        } else {
+          const userData = userDocSnap.data() || {};
+          const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+          if (!docsArr.includes(id)) {
+            docsArr.push(id);
+            await userDocRef.update({ docs: docsArr });
+            console.log("Added doc to collaborator's docs array:", id);
+          }
+        }
+
+        // Add the document to the collaborator's docs subcollection
+        const userDocSubRef = userDocRef.collection('docs').doc(id);
+        await userDocSubRef.set(
+          { id, title: data.title, content: data.content, creator: uid, collaborators: data.collaborators },
+          { merge: true }
+        );
         return true;
       } catch (err) {
         console.error("Error adding collaborator:", err);
@@ -180,6 +202,73 @@ export async function docRoutes(fastify: FastifyInstance) {
         }
       } catch (err) {
         console.error("Error updating document:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { collaborator: string } }>(
+    "/api/documents/remove-collaborator/:id/:uid",
+    async (request, reply) => {
+      console.log("Received request to remove collaborator for document:", request.params.id, "by user:", request.params.uid);
+      console.log("Request body:", request.body);
+      const { id, uid } = request.params;
+      let collaborator: string | undefined = undefined;
+      try {
+        const parsed = typeof request.body === "string" ? JSON.parse(request.body) : request.body;
+        collaborator = parsed.collaborator;
+      } catch (e) {
+        console.error("Failed to parse request.body as JSON:", e);
+        return reply.status(400).send({ error: "Invalid JSON in request body" });
+      }
+      if (!collaborator || collaborator.trim() === "") {
+        return reply.status(400).send({ error: "Collaborator cannot be empty" });
+      }
+      if (collaborator === uid) {
+        return reply.status(400).send({ error: "You cannot remove yourself as a collaborator" });
+      }
+
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.createdBy || data.createdBy !== uid) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        if (!data.collaborators.includes(collaborator)) {
+          return reply.status(400).send({ error: "Collaborator does not exist" });
+        }
+        // Remove collaborator
+        const updatedCollaborators = data.collaborators.filter((c: string) => c !== collaborator);
+        await docRef.update({ collaborators: updatedCollaborators });
+        console.log("Collaborator removed successfully:", collaborator);
+
+        // Remove the document from the user's docs array
+        const userDocRef = db.collection('users').doc(collaborator);
+        const userDocSnap = await userDocRef.get();
+        if (userDocSnap.exists) {
+          const userData = userDocSnap.data() || {};
+          const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+          const updatedDocs = docsArr.filter(docId => docId !== id);
+          await userDocRef.update({ docs: updatedDocs });
+          console.log("Removed doc from collaborator's docs array:", id);
+        }
+
+        // Optionally, remove the document from the user's docs subcollection
+        const userDocSubRef = db.collection('users').doc(collaborator).collection('docs').doc(id);
+        await userDocSubRef.delete();
+
+        return true;
+      } catch (err) {
+        console.error("Error removing collaborator:", err);
         return reply.status(500).send({ error: "Internal server error" });
       }
     }

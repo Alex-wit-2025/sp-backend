@@ -1,19 +1,14 @@
 import Fastify from "fastify";
-import websocket from "@fastify/websocket";
-import { helloRoutes } from "./routes/hello";
-import { socketRoutes } from "./ws/socket";
 import { docRoutes } from "./routes/documents";
 import { userRoutes } from "./routes/user";
 
 const fastify = Fastify();
 
 async function main() {
-  await fastify.register(websocket);
-  await fastify.register(helloRoutes);
-  await fastify.register(socketRoutes);
   await fastify.register(docRoutes);
   await fastify.register(userRoutes);
-  
+
+  console.log("About to start Fastify server..."); // Add this line
 
   try {
     await fastify.listen({ port: 3000 });

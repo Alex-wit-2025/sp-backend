@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from "fastify";
 import admin from "firebase-admin";
 import { db } from "../utils/firebase";
-import { verifyAuth } from "../utils/fbauth"; 
+import { verifyAuth } from "../utils/fbauth";
 
 interface DocumentsListRequest extends FastifyRequest {
   params: { uid: string };
@@ -13,6 +13,7 @@ interface ListOfDocuments {
 }
 
 export async function userRoutes(fastify: FastifyInstance) {
+  console.log("Registering user routes...");
   fastify.get("/pfp/:uid", async (request, reply) => {
     return {};
   });
@@ -57,6 +58,32 @@ export async function userRoutes(fastify: FastifyInstance) {
       console.error("Error fetching user email:", err);
       return reply.status(404).send({ error: "User not found" });
     }
+  });
+  fastify.post<{ Body: { uids: string[] }; Reply: { results: { uid: string, email: string }[] } }>("/api/emails/bulk", async (request, reply) => {
+    console.log("Received bulk email request:", request.body);
+    let uids: string[] = [];
+    try {
+      if (typeof request.body === "string") {
+        uids = JSON.parse(request.body).uids;
+      } else {
+        uids = request.body.uids;
+      }
+    } catch (err) {
+      return reply.status(400).send({ results: [] });
+    }
+    if (!Array.isArray(uids)) {
+      return reply.status(400).send({ results: [] });
+    }
+    const results: { uid: string, email: string }[] = [];
+    for (const uid of uids) {
+      try {
+        const userRecord = await admin.auth().getUser(uid);
+        results.push({ uid, email: userRecord.email ?? "unknown" });
+      } catch {
+        results.push({ uid, email: "unknown" });
+      }
+    }
+    return { results };
   });
   fastify.get<{ Params: { email: string }; Reply: { uid?: string } | { error: string } }>("/api/uid/:email", async (request, reply) => {
     const { email } = request.params;
