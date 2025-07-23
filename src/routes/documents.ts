@@ -1,7 +1,9 @@
 import { FastifyInstance, FastifyRequest } from "fastify";
 import { db } from "../utils/firebase";
 import { DocumentData } from "../utils/types";
-import admin from "firebase-admin"; // Make sure to initialize admin elsewhere
+import admin from "firebase-admin";
+import { assert } from "console";
+import { verifyAuth } from "../utils/fbauth";
 
 const COLLECTION_NAME = 'documents';
 
@@ -10,34 +12,25 @@ interface GetDocRequest extends FastifyRequest {
   headers: { authorization?: string };
 }
 
+interface ListCollaborators {
+  collaborators: string[];
+  canEdit: boolean;
+}
+
 
 export async function docRoutes(fastify: FastifyInstance) {
+  console.log("Registering document routes...");
   fastify.get<{ Params: { id: string; uid: string }; Reply: DocumentData | { error: string } }>(
     "/api/documents/:id/:uid",
     async (request: GetDocRequest, reply): Promise<DocumentData | { error: string }> => {
       console.log("Received request for document:", request.params.id, "by user:", request.params.uid);
       const { id, uid } = request.params;
-      const authHeader = request.headers.authorization;
-      //console.log("Authorization header:", authHeader);
-      
-      if (!authHeader || !authHeader.startsWith("Bearer ")) {
-        console.error("Missing or invalid Authorization header");
-        return reply.status(401).send({ error: "Missing or invalid Authorization header" });
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
       }
-      
-      const idToken = authHeader.split(" ")[1];
       try {
-        const decoded = await admin.auth().verifyIdToken(idToken);
-        console.log("Decoded token:", decoded);
-        if (decoded.uid !== uid) {
-          console.error("UID mismatch: expected", uid, "but got", decoded.uid);
-          return reply.status(403).send({ error: "UID mismatch" });
-        }
-
-        console.log("Token verified successfully for UID:", uid);
         const docRef = db.collection(COLLECTION_NAME).doc(id);
-        
-        //test connection to Firestore
         // List all collections in Firestore for debugging
         try {
           const collections = await admin.firestore().listCollections();
@@ -57,70 +50,227 @@ export async function docRoutes(fastify: FastifyInstance) {
         if (!data.collaborators.includes(uid)) {
           return reply.status(403).send({ error: "Unauthorized access" });
         }
-
         const { id: _id, ...restData } = data;
         return { id: docSnap.id, ...restData } as DocumentData;
       } catch (err) {
         console.log("Error verifying token or fetching document:", err);
-        //get stack trace
         console.error("Stack trace:", err instanceof Error ? err.stack : "No stack trace available");
-
         return reply.status(401).send({ error: "Invalid or expired token" });
       }
     }
   );
-  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { content?: string } }>(
-  "/api/documents/update/:id/:uid",
-  async (request, reply) => {
-    console.log("Received update request for document:", request.params.id, "by user:", request.params.uid);
-    console.log("Request body:", request.body);
-    console.log("Request headers:", request.headers);
-    const { id, uid } = request.params;
-    let content: string | undefined = undefined;
-    try {
-      const parsed = JSON.parse(request.body as string);
-      content = parsed.content;
-    } catch (e) {
-      console.error("Failed to parse request.body as JSON:", e);
-      return reply.status(400).send({ error: "Invalid JSON in request body" });
-    }
-    console.log("Content to update:", content);
-    const authHeader = request.headers.authorization;
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return reply.status(401).send({ error: "Missing or invalid Authorization header" });
-    }
+  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { collaborator: string } }>(
+    "/api/documents/add-collaborator/:id/:uid",
+    async (request, reply) => {
+      console.log("Received request to add collaborator for document:", request.params.id, "by user:", request.params.uid);
+      console.log("Request body:", request.body);
+      console.log("Request headers:", request.headers);
+      const { id, uid } = request.params;
+      let collaborator: string | undefined = undefined;
+      try {
+        const parsed = JSON.parse(request.body as unknown as string);
+        collaborator = parsed.collaborator;
+      } catch (e) {
+        console.error("Failed to parse request.body as JSON:", e);
+        return reply.status(400).send({ error: "Invalid JSON in request body" });
+      }
+      if (!collaborator || collaborator.trim() === "") {
+        return reply.status(400).send({ error: "Collaborator cannot be empty" });
+      }
+      assert(typeof collaborator === "string", "Collaborator must be a string");
+      console.log("Collaborator to add:", collaborator);
 
-    const idToken = authHeader.split(" ")[1];
-    try {
-      const decoded = await admin.auth().verifyIdToken(idToken);
-      if (decoded.uid !== uid) {
-        return reply.status(403).send({ error: "UID mismatch" });
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
       }
 
-      const docRef = db.collection(COLLECTION_NAME).doc(id);
-      const docSnap = await docRef.get();
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.createdBy || data.createdBy !== uid) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        if (!data.collaborators.includes(collaborator)) {
+          data.collaborators.push(collaborator);
+          await docRef.update({ collaborators: data.collaborators });
+          console.log("Collaborator added successfully:", collaborator);
+        } else {
+          console.log("Collaborator already exists:", collaborator);
+          return reply.status(400).send({ error: "Collaborator already exists" });
+        }
 
-      if (!docSnap.exists) {
-        return reply.status(404).send({ error: "Document not found" });
-      }
+        // Ensure user document exists for the collaborator and update docs array
+        const userDocRef = db.collection('users').doc(collaborator);
+        const userDocSnap = await userDocRef.get();
+        if (!userDocSnap.exists) {
+          await userDocRef.set({ docs: [id] });
+          console.log("Created new user document for collaborator:", collaborator);
+        } else {
+          const userData = userDocSnap.data() || {};
+          const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+          if (!docsArr.includes(id)) {
+            docsArr.push(id);
+            await userDocRef.update({ docs: docsArr });
+            console.log("Added doc to collaborator's docs array:", id);
+          }
+        }
 
-      const data = docSnap.data() as DocumentData;
-      if (!data.collaborators.includes(uid)) {
-        return reply.status(403).send({ error: "Unauthorized access" });
-      }
-
-      // Only update if content is provided
-      if (typeof content === "string") {
-        await docRef.update({ content });
+        // Add the document to the collaborator's docs subcollection
+        const userDocSubRef = userDocRef.collection('docs').doc(id);
+        await userDocSubRef.set(
+          { id, title: data.title, content: data.content, creator: uid, collaborators: data.collaborators },
+          { merge: true }
+        );
         return true;
-      } else {
-        return reply.status(400).send({ error: "No content provided" });
+      } catch (err) {
+        console.error("Error adding collaborator:", err);
+        return reply.status(500).send({ error: "Internal server error" });
       }
-    } catch (err) {
-      console.error("Error updating document:", err);
-      return reply.status(500).send({ error: "Internal server error" });
     }
-  }
-);
+  );
+
+  fastify.get<{ Params: { id: string; uid: string }; Reply: ListCollaborators | { error: string } }>(
+    "/api/documents/collaborators/:id/:uid",
+    async (request, reply) => {
+      const { id, uid } = request.params;
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.collaborators.includes(uid)) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        return {
+          collaborators: data.collaborators,
+          canEdit: data.createdBy === uid
+        } as ListCollaborators;
+      } catch (err) {
+        console.error("Error listing collaborators:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { content?: string } }>(
+    "/api/documents/update/:id/:uid",
+    async (request, reply) => {
+      console.log("Received update request for document:", request.params.id, "by user:", request.params.uid);
+      console.log("Request body:", request.body);
+      console.log("Request headers:", request.headers);
+      const { id, uid } = request.params;
+      let content: string | undefined = undefined;
+      try {
+        const parsed = JSON.parse(request.body as string);
+        content = parsed.content;
+      } catch (e) {
+        console.error("Failed to parse request.body as JSON:", e);
+        return reply.status(400).send({ error: "Invalid JSON in request body" });
+      }
+      console.log("Content to update:", content);
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.collaborators.includes(uid)) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        if (typeof content === "string") {
+          await docRef.update({ content });
+          return true;
+        } else {
+          return reply.status(400).send({ error: "No content provided" });
+        }
+      } catch (err) {
+        console.error("Error updating document:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+
+  fastify.post<{ Params: { id: string; uid: string }; Reply: boolean | { error: string }; Body: { collaborator: string } }>(
+    "/api/documents/remove-collaborator/:id/:uid",
+    async (request, reply) => {
+      console.log("Received request to remove collaborator for document:", request.params.id, "by user:", request.params.uid);
+      console.log("Request body:", request.body);
+      const { id, uid } = request.params;
+      let collaborator: string | undefined = undefined;
+      try {
+        const parsed = typeof request.body === "string" ? JSON.parse(request.body) : request.body;
+        collaborator = parsed.collaborator;
+      } catch (e) {
+        console.error("Failed to parse request.body as JSON:", e);
+        return reply.status(400).send({ error: "Invalid JSON in request body" });
+      }
+      if (!collaborator || collaborator.trim() === "") {
+        return reply.status(400).send({ error: "Collaborator cannot be empty" });
+      }
+      if (collaborator === uid) {
+        return reply.status(400).send({ error: "You cannot remove yourself as a collaborator" });
+      }
+
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.createdBy || data.createdBy !== uid) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        if (!data.collaborators.includes(collaborator)) {
+          return reply.status(400).send({ error: "Collaborator does not exist" });
+        }
+        // Remove collaborator
+        const updatedCollaborators = data.collaborators.filter((c: string) => c !== collaborator);
+        await docRef.update({ collaborators: updatedCollaborators });
+        console.log("Collaborator removed successfully:", collaborator);
+
+        // Remove the document from the user's docs array
+        const userDocRef = db.collection('users').doc(collaborator);
+        const userDocSnap = await userDocRef.get();
+        if (userDocSnap.exists) {
+          const userData = userDocSnap.data() || {};
+          const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+          const updatedDocs = docsArr.filter(docId => docId !== id);
+          await userDocRef.update({ docs: updatedDocs });
+          console.log("Removed doc from collaborator's docs array:", id);
+        }
+
+        // Optionally, remove the document from the user's docs subcollection
+        const userDocSubRef = db.collection('users').doc(collaborator).collection('docs').doc(id);
+        await userDocSubRef.delete();
+
+        return true;
+      } catch (err) {
+        console.error("Error removing collaborator:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
 }
