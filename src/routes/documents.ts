@@ -1,7 +1,7 @@
 import { FastifyInstance, FastifyRequest } from "fastify";
 import { db } from "../utils/firebase";
 import { DocumentData } from "../utils/types";
-import admin from "firebase-admin";
+import admin, { firestore } from "firebase-admin";
 import { assert } from "console";
 import { verifyAuth } from "../utils/fbauth";
 
@@ -17,9 +17,57 @@ interface ListCollaborators {
   canEdit: boolean;
 }
 
-
 export async function docRoutes(fastify: FastifyInstance) {
   console.log("Registering document routes...");
+
+  // Create a new document
+  fastify.post<{ Params: { uid: string }; Body: { title: string; content: string }; Reply: DocumentData | { error: string } }>(
+    "/api/documents/create/:uid",
+    async (request, reply) => {
+      const { uid } = request.params;
+      const { title, content } = typeof request.body === "string" ? JSON.parse(request.body) : request.body;
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+      if (!title) {
+        return reply.status(400).send({ error: "Title is required" });
+      }
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc();
+        const now = admin.firestore.Timestamp.now();
+        const docData: DocumentData = {
+          id: docRef.id,
+          title,
+          content,
+          createdBy: uid,
+          collaborators: [uid],
+          createdAt: now,
+          updatedAt: now
+        };
+        await docRef.set(docData);
+        // Add doc to user's docs array
+        const userDocRef = db.collection('users').doc(uid);
+        const userDocSnap = await userDocRef.get();
+        if (!userDocSnap.exists) {
+          await userDocRef.set({ docs: [docRef.id] });
+        } else {
+          const userData = userDocSnap.data() || {};
+          const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+          if (!docsArr.includes(docRef.id)) {
+            docsArr.push(docRef.id);
+            await userDocRef.update({ docs: docsArr });
+          }
+        }
+        // Add doc to user's docs subcollection
+        await userDocRef.collection('docs').doc(docRef.id).set(docData, { merge: true });
+        return docData;
+      } catch (err) {
+        console.error("Error creating document:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
   fastify.get<{ Params: { id: string; uid: string }; Reply: DocumentData | { error: string } }>(
     "/api/documents/:id/:uid",
     async (request: GetDocRequest, reply): Promise<DocumentData | { error: string }> => {
