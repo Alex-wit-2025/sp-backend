@@ -60,5 +60,3 @@ This is the backend for the `sp-backend` project, built with [Fastify](https://w
 The y-websocket server runs on `localhost:1234` for collaborative editing features.
 
 use `HOST=localhost PORT=1234 npx y-websocket` to run it
-
-## License
