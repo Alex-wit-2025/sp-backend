@@ -1,12 +1,12 @@
+import { firestore } from 'firebase-admin';
 import { User } from 'firebase/auth';
-import { Timestamp } from 'firebase/firestore';
 
 export interface DocumentData {
   id: string;
   title: string;
   content: string;
-  createdAt: Timestamp;
-  updatedAt: Timestamp;
+  createdAt: firestore.Timestamp;
+  updatedAt: firestore.Timestamp;
   createdBy: string;
   collaborators: string[];
 }
