@@ -19,7 +19,104 @@ interface ListCollaborators {
 
 export async function docRoutes(fastify: FastifyInstance) {
   console.log("Registering document routes...");
+  // Update document title (name)
+  fastify.post<{ Params: { id: string; uid: string }; Body: { title?: string }; Reply: boolean | { error: string } }>(
+    "/api/documents/update-title/:id/:uid",
+    async (request, reply) => {
+      const { id, uid } = request.params;
+      let title: string | undefined = undefined;
+      try {
+        const parsed = typeof request.body === "string" ? JSON.parse(request.body) : request.body;
+        title = parsed.title;
+      } catch (e) {
+        console.error("Failed to parse request.body as JSON:", e);
+        return reply.status(400).send({ error: "Invalid JSON in request body" });
+      }
+      if (!title || title.trim() === "") {
+        return reply.status(400).send({ error: "Title is required" });
+      }
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.collaborators.includes(uid)) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
+        await docRef.update({ title });
+        return true;
+      } catch (err) {
+        console.error("Error updating document title:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
+  fastify.delete<{ Params: { id: string; uid: string }; Reply: boolean | { error: string } }>(
+    "/api/documents/delete/:id/:uid",
+    async (request, reply) => {
+      const { id, uid } = request.params;
+      const authResult = await verifyAuth(request.headers.authorization, uid);
+      if ("error" in authResult) {
+        return reply.status(authResult.status).send({ error: authResult.error });
+      }
+      try {
+        const docRef = db.collection(COLLECTION_NAME).doc(id);
+        const docSnap = await docRef.get();
+        if (!docSnap.exists) {
+          return reply.status(404).send({ error: "Document not found" });
+        }
+        const data = docSnap.data() as DocumentData;
+        if (!data.collaborators.includes(uid)) {
+          return reply.status(403).send({ error: "Unauthorized access" });
+        }
 
+        if (data.createdBy === uid) {
+          // Remove doc from all collaborators' docs arrays and subcollections
+          for (const collaborator of data.collaborators) {
+            const userDocRef = db.collection('users').doc(collaborator);
+            const userDocSnap = await userDocRef.get();
+            if (userDocSnap.exists) {
+              const userData = userDocSnap.data() || {};
+              const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+              const updatedDocs = docsArr.filter(docId => docId !== id);
+              await userDocRef.update({ docs: updatedDocs });
+            }
+            // Remove from docs subcollection
+            await userDocRef.collection('docs').doc(id).delete();
+          }
+          // Delete the document itself
+          await docRef.delete();
+          return true;
+        } else {
+          // Remove current uid from collaborators
+          const updatedCollaborators = data.collaborators.filter((c: string) => c !== uid);
+          await docRef.update({ collaborators: updatedCollaborators });
+
+          // Remove doc from user's docs array
+          const userDocRef = db.collection('users').doc(uid);
+          const userDocSnap = await userDocRef.get();
+          if (userDocSnap.exists) {
+            const userData = userDocSnap.data() || {};
+            const docsArr: string[] = Array.isArray(userData.docs) ? userData.docs : [];
+            const updatedDocs = docsArr.filter(docId => docId !== id);
+            await userDocRef.update({ docs: updatedDocs });
+          }
+          // Remove from docs subcollection
+          await userDocRef.collection('docs').doc(id).delete();
+          return true;
+        }
+      } catch (err) {
+        console.error("Error deleting document:", err);
+        return reply.status(500).send({ error: "Internal server error" });
+      }
+    }
+  );
   // Create a new document
   fastify.post<{ Params: { uid: string }; Body: { title: string; content: string }; Reply: DocumentData | { error: string } }>(
     "/api/documents/create/:uid",
