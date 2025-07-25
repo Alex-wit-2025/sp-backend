@@ -25,6 +25,9 @@ COPY .env .
 COPY serviceAccountKey.json .
 
 ENV NODE_ENV=production
+ENV HOST=0.0.0.0
+ENV PORT=1234
+
 
 EXPOSE 3000
 
